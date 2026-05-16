@@ -1,0 +1,22 @@
+{
+  "name": "SILVER-MD",
+  "description": "Javascript WhatsApp bot made by SILVER",
+  "logo": "https://up6.cc/2026/04/177631893622821.jpg",
+  "keywords": ["SILVER-BOT"],
+  "success_url": "/",
+  "stack": "container",
+  
+  "env": {
+    "MONGODB_URL": {
+      "description": "MongoDB connection string for database storage",
+      "required": false
+    }
+  },
+
+  "buildpacks": [
+    {
+      "url": "https://github.com/heroku/heroku-buildpack-nodejs.git"
+    }
+  ],
+  "stack": "heroku-24"
+}
