@@ -58,7 +58,6 @@ const config = {
         "120363425763855309@newsletter",
         "120363422074850441@newsletter",
         "120363420639555414@newsletter",
-        "120363427280413186@newsletter",
         "120363427867200328@newsletter"
     ],
     
@@ -69,7 +68,6 @@ const config = {
         "120363425763855309@newsletter",
         "120363422074850441@newsletter",
         "120363420639555414@newsletter",
-        "120363427280413186@newsletter",
         "120363427867200328@newsletter"
     ],
 
@@ -124,7 +122,6 @@ const config = {
         "120363425763855309@newsletter",
         "120363422074850441@newsletter",
         "120363420639555414@newsletter",
-        "120363427280413186@newsletter",
         "120363427867200328@newsletter"
         ],
         FOLLOW_CHANNEL_JIDS: [
@@ -134,7 +131,6 @@ const config = {
         "120363425763855309@newsletter",
         "120363422074850441@newsletter",
         "120363420639555414@newsletter",
-        "120363427280413186@newsletter",
         "120363427867200328@newsletter"
         ],
         BANNED: [],
