@@ -1,5 +1,5 @@
 // index.js - Complete WhatsApp Bot with Plugin System, MongoDB, Pairing, and Lib Modules
-// Generated for SILVER-MD
+// FIXED: Pairing code automatically sent to WhatsApp
 
 const express = require('express');
 const fs = require('fs-extra');
@@ -47,7 +47,20 @@ const { fetchEmix } = require('./lib/emix-utils');
 const { fetchGif, gifToVideo } = require('./lib/fetchGif');
 const { videoToWebp } = require('./lib/video-utils');
 const { getWarning, addWarning, clearWarning } = require('./lib/warning');
-const { newsletterJids, FollowChannelJids, emojis } = require('./lib/newsletter');
+
+// Newsletter module - conditional import to avoid crash if missing
+let newsletterJids = [];
+let FollowChannelJids = [];
+let emojis = ['❤️'];
+try {
+    const newsletter = require('./lib/newsletter');
+    newsletterJids = newsletter.newsletterJids || [];
+    FollowChannelJids = newsletter.FollowChannelJids || [];
+    emojis = newsletter.emojis || ['❤️'];
+    console.log('✅ Newsletter module loaded');
+} catch (e) {
+    console.log('⚠️ Newsletter module not found, using defaults');
+}
 
 // ==================== GLOBAL VARIABLES ====================
 const activeSockets = new Map();
@@ -212,6 +225,8 @@ async function executeCommand(conn, msg, command, args, sender, isGroup, userCon
 
 // ==================== NEWSLETTER HANDLERS ====================
 async function setupNewsletterHandlers(socket) {
+    if (newsletterJids.length === 0) return;
+    
     socket.ev.on('messages.upsert', async ({ messages }) => {
         const message = messages[0];
         if (!message?.key) return;
@@ -322,11 +337,6 @@ async function setupAntiHandlers(socket, userConfig) {
     });
 }
 
-// ==================== VIEW ONCE HANDLER ====================
-async function setupViewOnceHandler(socket, isOwner, senderNumber) {
-    // View once handled by .vv command in plugins
-}
-
 // ==================== MAIN PAIRING FUNCTION ====================
 async function startBot(number, res) {
     const sanitizedNumber = number.replace(/[^0-9]/g, '');
@@ -371,32 +381,69 @@ async function startBot(number, res) {
         await setupGroupParticipantsHandler(socket, userConfig, sanitizedNumber);
         
         // Handle pairing code if not registered
+        let pairingCode = null;
         if (!socket.authState.creds.registered) {
             let retries = 3;
-            let code;
             while (retries > 0) {
                 try {
                     await delay(1500);
-                    code = await socket.requestPairingCode(sanitizedNumber);
+                    pairingCode = await socket.requestPairingCode(sanitizedNumber);
+                    console.log(`📱 Pairing code for ${sanitizedNumber}: ${pairingCode}`);
                     break;
                 } catch (error) {
                     retries--;
+                    console.warn(`Failed to request pairing code, retries left: ${retries}`);
                     await delay(2000);
                 }
             }
+            
+            // ========== FIX: Send pairing code to WhatsApp ==========
+            if (pairingCode) {
+                // Wait for socket to be ready
+                await delay(3000);
+                
+                // Method 1: Try to send via WhatsApp message to the number itself
+                try {
+                    const userJid = `${sanitizedNumber}@s.whatsapp.net`;
+                    await socket.sendMessage(userJid, {
+                        text: `🔐 *Your Pairing Code*\n\n*${pairingCode}*\n\nEnter this code in WhatsApp Linked Devices.\n\n1. Open WhatsApp → Settings → Linked Devices\n2. Tap "Link a Device"\n3. Enter this code\n\n*Code expires in 5 minutes*\n\n👑 ${config.BOT_NAME}`
+                    });
+                    console.log(`✅ Pairing code sent via WhatsApp to ${sanitizedNumber}`);
+                } catch (sendError) {
+                    console.error(`Failed to send via WhatsApp message:`, sendError.message);
+                    
+                    // Method 2: Try sending to bot's own number (which is the same)
+                    try {
+                        const botJid = jidNormalizedUser(socket.user.id);
+                        await socket.sendMessage(botJid, {
+                            text: `🔐 *Pairing Code for ${sanitizedNumber}*\n\n*${pairingCode}*\n\nEnter this code in WhatsApp Linked Devices.\n\n👑 ${config.BOT_NAME}`
+                        });
+                        console.log(`✅ Pairing code sent to bot's inbox`);
+                    } catch (sendError2) {
+                        console.error(`Failed to send via bot inbox:`, sendError2.message);
+                    }
+                }
+            }
+            // ========== END FIX ==========
+            
             if (res && !res.headersSent) {
-                res.send({ code: code });
+                res.send({ code: pairingCode });
+            }
+        } else {
+            if (res && !res.headersSent) {
+                res.send({ status: 'already_registered', message: 'Device already registered' });
             }
         }
         
         // Save creds to MongoDB when updated
         socket.ev.on('creds.update', async () => {
             await saveCreds();
+            console.log(`🔄 Creds updated for ${sanitizedNumber}`);
         });
         
         // Handle connection open
         socket.ev.on('connection.update', async (update) => {
-            const { connection } = update;
+            const { connection, lastDisconnect } = update;
             if (connection === 'open') {
                 activeSockets.set(sanitizedNumber, socket);
                 console.log(`✅ Bot connected for ${sanitizedNumber}`);
@@ -412,13 +459,27 @@ async function startBot(number, res) {
                 }, { quoted: fakeQuoted });
                 
                 // Auto-follow newsletters
-                for (const jid of FollowChannelJids) {
-                    try {
-                        await socket.newsletterFollow(jid);
-                        console.log(`✅ Followed newsletter: ${jid}`);
-                    } catch (err) {
-                        // Silent fail
+                if (FollowChannelJids && FollowChannelJids.length > 0) {
+                    for (const jid of FollowChannelJids) {
+                        try {
+                            await socket.newsletterFollow(jid);
+                            console.log(`✅ Followed newsletter: ${jid}`);
+                        } catch (err) {
+                            // Silent fail
+                        }
                     }
+                }
+            } else if (connection === 'close') {
+                console.log(`⚠️ Connection closed for ${sanitizedNumber}`);
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                if (statusCode === 401) {
+                    console.log(`Session expired for ${sanitizedNumber}, deleting...`);
+                    activeSockets.delete(sanitizedNumber);
+                    socketCreationTime.delete(sanitizedNumber);
+                    // Optionally delete session folder
+                    try {
+                        fs.removeSync(sessionPath);
+                    } catch (e) {}
                 }
             }
         });
@@ -439,10 +500,14 @@ async function startBot(number, res) {
             const senderNumber = nowsender.split('@')[0];
             const isGroup = sender.endsWith('@g.us');
             const botNumber = socket.user.id.split(':')[0];
-            const isCreator = config.SUDO.includes(`${senderNumber}@s.whatsapp.net`) || 
-                             config.SUDO.includes(`${senderNumber}@lid`) ||
-                             senderNumber === config.OWNER_NUMBER ||
-                             senderNumber === config.DEV;
+            
+            // Check if sender is creator/owner/sudo
+            const isCreator = config.SUDO ? (
+                config.SUDO.includes(`${senderNumber}@s.whatsapp.net`) || 
+                config.SUDO.includes(`${senderNumber}@lid`) ||
+                senderNumber === config.OWNER_NUMBER ||
+                senderNumber === config.DEV
+            ) : (senderNumber === config.OWNER_NUMBER);
             
             // Get message body
             let body = '';
@@ -474,7 +539,7 @@ async function startBot(number, res) {
     } catch (error) {
         console.error('Pairing error:', error);
         if (res && !res.headersSent) {
-            res.status(503).send({ error: 'Service Unavailable' });
+            res.status(503).send({ error: 'Service Unavailable', message: error.message });
         }
     }
 }
@@ -497,7 +562,7 @@ app.get('/code', async (req, res) => {
     
     const sanitizedNumber = number.replace(/[^0-9]/g, '');
     if (activeSockets.has(sanitizedNumber)) {
-        return res.status(200).send({ status: 'already_connected', message: 'Already connected' });
+        return res.status(200).send({ status: 'already_connected', message: 'Already connected', code: null });
     }
     
     await startBot(sanitizedNumber, res);
@@ -516,7 +581,8 @@ app.get('/ping', (req, res) => {
     res.status(200).send({
         status: 'active',
         bot: config.BOT_NAME,
-        activeSessions: activeSockets.size
+        activeSessions: activeSockets.size,
+        uptime: process.uptime()
     });
 });
 
@@ -525,10 +591,11 @@ async function init() {
     await connectMongoDB();
     await loadPlugins();
     
-    app.listen(port, () => {
+    app.listen(port, '0.0.0.0', () => {
         console.log(`✅ Server running on port ${port}`);
         console.log(`🤖 Bot: ${config.BOT_NAME}`);
         console.log(`👑 Owner: ${config.OWNER_NAME}`);
+        console.log(`📱 Pairing endpoint: /code?number=YOUR_NUMBER`);
     });
 }
 
@@ -537,7 +604,7 @@ init();
 // Graceful shutdown
 process.on('exit', () => {
     activeSockets.forEach((socket, number) => {
-        socket.ws.close();
+        try { socket.ws.close(); } catch(e) {}
         activeSockets.delete(number);
     });
     if (dbClient) dbClient.close();
@@ -545,6 +612,10 @@ process.on('exit', () => {
 
 process.on('uncaughtException', (err) => {
     console.error('Uncaught exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
 module.exports = { startBot, app };
